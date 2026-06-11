@@ -2,21 +2,28 @@
 
 # Exchange Configuration
 exchange:
-  name: binance  # binance, bybit, okx, etc.
-  api_key: ${EXCHANGE_API_KEY}
-  api_secret: ${EXCHANGE_API_SECRET}
-  testnet: true  # Use testnet for paper trading
-  rate_limit: 1200  # Requests per minute
+  name: paper_trading  # paper_trading, binance, hyperliquid
+  initial_balance: 10000.0  # Paper trading initial balance
+  maker_fee: 0.001  # 0.1%
+  taker_fee: 0.001  # 0.1%
+  slippage: 0.0005  # 0.05%
+  
+  # Hyperliquid (for real prices)
+  hyperliquid:
+    testnet: false  # Use mainnet for real prices
+    account_address: ${HYPERLIQUID_ACCOUNT_ADDRESS}
+    private_key: ${HYPERLIQUID_PRIVATE_KEY}
 
 # Trading Configuration
 trading:
   pairs:
-    - BTC/USDT
-    - ETH/USDT
+    - BTC/USDC
+    - ETH/USDC
   timeframe: 1h  # 1m, 5m, 15m, 1h, 4h, 1d
   max_positions: 5
   risk_per_trade: 0.02  # 2% of portfolio
   max_drawdown: 0.20  # 20% max drawdown
+  close_on_stop: false
 
 # Order Configuration
 orders:
@@ -27,7 +34,7 @@ orders:
 
 # Strategy Configuration
 strategy:
-  name: sma_crossover  # sma_crossover, rsi, ml
+  name: sma_crossover  # sma_crossover, rsi, macd, bollinger_bands
   params:
     # SMA Crossover
     short_period: 20
@@ -37,6 +44,15 @@ strategy:
     rsi_period: 14
     oversold: 30
     overbought: 70
+    
+    # MACD
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+    
+    # Bollinger Bands
+    bb_period: 20
+    bb_std_dev: 2.0
     
     # ML (future)
     model_path: models/trained_model.pkl
@@ -65,13 +81,18 @@ api:
   cors_origins:
     - http://localhost:3000
     - http://localhost:8080
+    - "*"
+
+# Telegram Bot
+telegram:
+  enabled: true
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  chat_id: ${TELEGRAM_CHAT_ID}
+  authorized_users: []  # Empty = no restriction
 
 # Notifications (optional)
 notifications:
   enabled: false
-  telegram:
-    bot_token: ${TELEGRAM_BOT_TOKEN}
-    chat_id: ${TELEGRAM_CHAT_ID}
   discord:
     webhook_url: ${DISCORD_WEBHOOK_URL}
 

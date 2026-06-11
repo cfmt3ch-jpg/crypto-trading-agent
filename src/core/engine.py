@@ -10,11 +10,11 @@ from loguru import logger
 
 from src.core.portfolio import Portfolio
 from src.core.order_manager import OrderManager
-from src.strategies.base import BaseStrategy
-from src.strategies.sma_crossover import SMACrossoverStrategy
-from src.strategies.rsi import RSIStrategy
+from src.strategies.base import BaseStrategy, SignalSide
+from src.strategies import get_strategy
 from src.exchanges.base import BaseExchange
 from src.exchanges.binance import BinanceExchange
+from src.exchanges.paper_trading import PaperTradingExchange
 from src.models.candle import Candle
 from src.models.trade import Trade
 
@@ -29,6 +29,9 @@ class TradingEngine:
         self.strategy: Optional[BaseStrategy] = None
         self.portfolio: Optional[Portfolio] = None
         self.order_manager: Optional[OrderManager] = None
+        
+        # Real price feed (Hyperliquid)
+        self._price_feed = None
         
         # Statistics
         self.stats = {
@@ -45,6 +48,10 @@ class TradingEngine:
         # Initialize exchange
         self.exchange = self._init_exchange()
         await self.exchange.connect()
+        
+        # Initialize real price feed for paper trading
+        if self.config["exchange"]["name"] == "paper_trading":
+            await self._init_real_price_feed()
         
         # Initialize portfolio
         self.portfolio = Portfolio(self.config, self.exchange)
@@ -63,6 +70,7 @@ class TradingEngine:
         logger.info("Trading engine started successfully!")
         logger.info(f"Trading pairs: {self.config['trading']['pairs']}")
         logger.info(f"Strategy: {self.config['strategy']['name']}")
+        logger.info(f"Exchange: {self.config['exchange']['name']}")
         
         # Main trading loop
         await self._trading_loop()
@@ -82,6 +90,28 @@ class TradingEngine:
         
         logger.info("Trading engine stopped.")
     
+    async def _init_real_price_feed(self):
+        """Initialize real price feed from Hyperliquid."""
+        try:
+            from src.exchanges.hyperliquid import HyperliquidExchange
+            
+            # Create Hyperliquid connection for price feed only
+            hl_config = {
+                "name": "hyperliquid",
+                "testnet": False,
+                "account_address": "",
+                "private_key": ""
+            }
+            
+            self._price_feed = HyperliquidExchange(hl_config)
+            await self._price_feed.connect()
+            
+            logger.info("Real price feed initialized (Hyperliquid)")
+            
+        except Exception as e:
+            logger.warning(f"Could not initialize real price feed: {e}")
+            logger.info("Using simulated prices")
+    
     async def _trading_loop(self):
         """Main trading loop."""
         logger.info("Starting trading loop...")
@@ -90,6 +120,10 @@ class TradingEngine:
             try:
                 # Get current time
                 now = datetime.now()
+                
+                # Update prices from real feed
+                if self._price_feed:
+                    await self._update_real_prices()
                 
                 # Check if it's time to trade (based on timeframe)
                 if self._should_trade(now):
@@ -101,6 +135,16 @@ class TradingEngine:
             except Exception as e:
                 logger.error(f"Error in trading loop: {e}")
                 await asyncio.sleep(5)  # Wait before retrying
+    
+    async def _update_real_prices(self):
+        """Update prices from real price feed."""
+        try:
+            for pair in self.config["trading"]["pairs"]:
+                price = await self._price_feed.get_price(pair)
+                if price > 0:
+                    self.exchange.set_price(pair, price)
+        except Exception as e:
+            logger.debug(f"Error updating prices: {e}")
     
     def _should_trade(self, now: datetime) -> bool:
         """Check if it's time to execute a trading cycle."""
@@ -153,10 +197,17 @@ class TradingEngine:
                 signal.stop_loss
             )
             
+            if position_size <= 0:
+                logger.debug(f"Position size too small for {pair}")
+                return
+            
+            # Convert SignalSide to string
+            side_str = signal.side.value if isinstance(signal.side, SignalSide) else signal.side
+            
             # Create order
             order = self.order_manager.create_order(
                 pair=pair,
-                side=signal.side,
+                side=side_str,
                 order_type=self.config["orders"]["default_type"],
                 amount=position_size,
                 price=signal.entry_price,
@@ -168,7 +219,7 @@ class TradingEngine:
             result = await self.order_manager.execute_order(order)
             
             if result.success:
-                logger.info(f"Order executed: {signal.side} {position_size} {pair}")
+                logger.info(f"Order executed: {side_str} {position_size:.6f} {pair} @ {signal.entry_price:.2f}")
                 self.stats["trades_executed"] += 1
             else:
                 logger.warning(f"Order failed: {result.error}")
@@ -180,7 +231,7 @@ class TradingEngine:
         """Check risk management rules."""
         # Check max drawdown
         drawdown = self.portfolio.get_drawdown()
-        max_drawdown = self.config["risk"]["max_drawdown"]
+        max_drawdown = self.config.get("risk", {}).get("max_drawdown", 0.20)
         
         if drawdown > max_drawdown:
             logger.warning(f"Max drawdown exceeded: {drawdown:.2%} > {max_drawdown:.2%}")
@@ -205,7 +256,11 @@ class TradingEngine:
         
         if exchange_name == "binance":
             return BinanceExchange(self.config["exchange"])
-        # Add more exchanges here
+        elif exchange_name == "paper_trading":
+            return PaperTradingExchange(self.config["exchange"])
+        elif exchange_name == "hyperliquid":
+            from src.exchanges.hyperliquid import HyperliquidExchange
+            return HyperliquidExchange(self.config["exchange"])
         else:
             raise ValueError(f"Unsupported exchange: {exchange_name}")
     
@@ -214,13 +269,7 @@ class TradingEngine:
         strategy_name = self.config["strategy"]["name"]
         strategy_params = self.config["strategy"]["params"]
         
-        if strategy_name == "sma_crossover":
-            return SMACrossoverStrategy(strategy_params)
-        elif strategy_name == "rsi":
-            return RSIStrategy(strategy_params)
-        # Add more strategies here
-        else:
-            raise ValueError(f"Unsupported strategy: {strategy_name}")
+        return get_strategy(strategy_name, strategy_params)
     
     def get_stats(self) -> Dict:
         """Get trading statistics."""

@@ -1,7 +1,8 @@
 """
-Web Dashboard API - FastAPI backend for trading dashboard.
+Web Dashboard API - FastAPI backend for trading dashboard with Trade Journal.
 """
 
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -18,6 +19,8 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
     logger.warning("FastAPI not installed. Install with: pip install fastapi uvicorn")
+
+from src.journal.trade_journal import TradeJournal
 
 
 # Pydantic models for API
@@ -69,6 +72,9 @@ class TradingDashboard:
         self.app: Optional['FastAPI'] = None
         self.websocket_clients: List['WebSocket'] = []
         self.running = False
+        
+        # Initialize trade journal
+        self.journal = TradeJournal("data/journal")
     
     async def start(self, host: str = "0.0.0.0", port: int = 8000):
         """Start the web dashboard."""
@@ -231,7 +237,6 @@ class TradingDashboard:
             if self.engine.running:
                 return {"message": "Trading already running"}
             
-            import asyncio
             asyncio.create_task(self.engine.start())
             return {"message": "Trading started"}
         
@@ -257,6 +262,108 @@ class TradingDashboard:
                 "stop_loss": self.config.get("risk", {}).get("stop_loss_pct", 0.05),
                 "take_profit": self.config.get("risk", {}).get("take_profit_pct", 0.10)
             }
+        
+        # ===== TRADE JOURNAL ENDPOINTS =====
+        
+        @self.app.get("/api/journal")
+        async def get_journal(
+            pair: Optional[str] = None,
+            action: Optional[str] = None,
+            strategy: Optional[str] = None,
+            limit: int = 50
+        ):
+            """Get trade journal entries."""
+            entries = self.journal.get_entries(
+                pair=pair,
+                action=action,
+                strategy=strategy,
+                limit=limit
+            )
+            
+            return {
+                "entries": [
+                    {
+                        "id": e.id,
+                        "timestamp": e.timestamp,
+                        "pair": e.pair,
+                        "side": e.side,
+                        "action": e.action,
+                        "amount": e.amount,
+                        "price": e.price,
+                        "total_value": e.total_value,
+                        "strategy": e.strategy,
+                        "signal_type": e.signal_type,
+                        "confidence": e.confidence,
+                        "market_trend": e.market_trend,
+                        "volatility": e.volatility,
+                        "stop_loss": e.stop_loss,
+                        "take_profit": e.take_profit,
+                        "risk_reward_ratio": e.risk_reward_ratio,
+                        "exit_price": e.exit_price,
+                        "pnl": e.pnl,
+                        "pnl_percentage": e.pnl_percentage,
+                        "duration_seconds": e.duration_seconds,
+                        "entry_reason": e.entry_reason,
+                        "exit_reason": e.exit_reason,
+                        "notes": e.notes,
+                        "emotions": e.emotions,
+                        "tags": e.tags
+                    }
+                    for e in entries
+                ]
+            }
+        
+        @self.app.get("/api/journal/history")
+        async def get_trade_history(limit: int = 50):
+            """Get complete trade history with open/close pairs."""
+            history = self.journal.get_trade_history(limit=limit)
+            
+            return {
+                "trades": [
+                    {
+                        "id": t["id"],
+                        "open": {
+                            "timestamp": t["open"].timestamp,
+                            "pair": t["open"].pair,
+                            "side": t["open"].side,
+                            "amount": t["open"].amount,
+                            "price": t["open"].price,
+                            "strategy": t["open"].strategy,
+                            "signal_type": t["open"].signal_type,
+                            "confidence": t["open"].confidence,
+                            "entry_reason": t["open"].entry_reason,
+                            "stop_loss": t["open"].stop_loss,
+                            "take_profit": t["open"].take_profit,
+                            "risk_reward_ratio": t["open"].risk_reward_ratio
+                        } if t["open"] else None,
+                        "close": {
+                            "timestamp": t["close"].timestamp,
+                            "price": t["close"].price,
+                            "pnl": t["close"].pnl,
+                            "pnl_percentage": t["close"].pnl_percentage,
+                            "duration_seconds": t["close"].duration_seconds,
+                            "exit_reason": t["close"].exit_reason,
+                            "emotions": t["close"].emotions,
+                            "notes": t["close"].notes
+                        } if t["close"] else None
+                    }
+                    for t in history
+                ]
+            }
+        
+        @self.app.get("/api/journal/stats")
+        async def get_journal_stats():
+            """Get journal statistics."""
+            return self.journal.get_statistics()
+        
+        @self.app.get("/api/journal/export")
+        async def export_journal():
+            """Export journal to CSV."""
+            filepath = f"data/journal/export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            self.journal.export_to_csv(filepath)
+            return {"message": f"Journal exported to {filepath}"}
+        
+        # ===== WEBSOCKET =====
         
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: 'WebSocket'):
@@ -296,7 +403,7 @@ class TradingDashboard:
                 self.websocket_clients.remove(client)
     
     def _get_dashboard_html(self) -> str:
-        """Generate dashboard HTML."""
+        """Generate dashboard HTML with Trade Journal."""
         return """
 <!DOCTYPE html>
 <html lang="en">
@@ -323,6 +430,7 @@ class TradingDashboard:
             align-items: center;
         }
         h1 { color: #00d4ff; font-size: 24px; }
+        h2 { color: #00d4ff; font-size: 16px; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px; }
         .status-badge {
             padding: 8px 16px;
             border-radius: 20px;
@@ -337,13 +445,6 @@ class TradingDashboard:
             border-radius: 10px;
             padding: 20px;
             border: 1px solid #2d2d6b;
-        }
-        .card h2 { 
-            color: #00d4ff;
-            font-size: 16px;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
         }
         .stat { 
             display: flex;
@@ -370,18 +471,22 @@ class TradingDashboard:
         .btn-start { background: #00ff88; color: #000; }
         .btn-stop { background: #ff4444; color: #fff; }
         .btn-strategy { background: #00d4ff; color: #000; }
+        .btn-journal { background: #9b59b6; color: #fff; }
         
-        .positions-table {
+        .table-container {
+            overflow-x: auto;
+        }
+        table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 10px;
         }
-        .positions-table th, .positions-table td {
+        th, td {
             padding: 12px;
             text-align: left;
             border-bottom: 1px solid #2d2d6b;
         }
-        .positions-table th {
+        th {
             color: #00d4ff;
             font-size: 12px;
             text-transform: uppercase;
@@ -425,6 +530,93 @@ class TradingDashboard:
         .log-info { color: #00d4ff; }
         .log-success { color: #00ff88; }
         .log-error { color: #ff4444; }
+        
+        /* Journal specific styles */
+        .journal-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .journal-tab {
+            padding: 8px 16px;
+            background: #2d2d6b;
+            border: none;
+            color: #e0e0e0;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .journal-tab.active {
+            background: #00d4ff;
+            color: #000;
+        }
+        .journal-entry {
+            background: #0a0a1a;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            border-left: 4px solid #2d2d6b;
+        }
+        .journal-entry.buy { border-left-color: #00ff88; }
+        .journal-entry.sell { border-left-color: #ff4444; }
+        .journal-entry.profit { border-left-color: #00ff88; }
+        .journal-entry.loss { border-left-color: #ff4444; }
+        .journal-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .journal-pair { font-weight: bold; font-size: 16px; }
+        .journal-time { color: #666; font-size: 12px; }
+        .journal-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        .journal-detail {
+            font-size: 12px;
+        }
+        .journal-detail-label { color: #888; }
+        .journal-detail-value { font-weight: bold; }
+        .journal-reason {
+            margin-top: 10px;
+            padding: 10px;
+            background: #1a1a3e;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+        .journal-reason-label { color: #00d4ff; margin-bottom: 5px; }
+        .confidence-badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+        .confidence-high { background: #00ff88; color: #000; }
+        .confidence-medium { background: #ffaa00; color: #000; }
+        .confidence-low { background: #ff4444; color: #fff; }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #0a0a1a;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .stat-card-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+        .stat-card-label {
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -494,25 +686,68 @@ class TradingDashboard:
             </div>
         </div>
         
+        <!-- Open Positions -->
         <div class="card" style="margin-top: 20px;">
             <h2>📋 Open Positions</h2>
-            <table class="positions-table">
-                <thead>
-                    <tr>
-                        <th>Pair</th>
-                        <th>Side</th>
-                        <th>Amount</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>P/L</th>
-                    </tr>
-                </thead>
-                <tbody id="positions-body">
-                    <tr><td colspan="6" style="text-align: center;">No open positions</td></tr>
-                </tbody>
-            </table>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Pair</th>
+                            <th>Side</th>
+                            <th>Amount</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>P/L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-body">
+                        <tr><td colspan="6" style="text-align: center;">No open positions</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
         
+        <!-- Trade Journal -->
+        <div class="card" style="margin-top: 20px;">
+            <h2>📔 Trade Journal</h2>
+            
+            <!-- Journal Stats -->
+            <div class="stats-grid" id="journal-stats">
+                <div class="stat-card">
+                    <div class="stat-card-value" id="journal-total-trades">0</div>
+                    <div class="stat-card-label">Total Trades</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-value" id="journal-win-rate">0%</div>
+                    <div class="stat-card-label">Win Rate</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-value" id="journal-total-pnl">$0</div>
+                    <div class="stat-card-label">Total P/L</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-value" id="journal-avg-pnl">$0</div>
+                    <div class="stat-card-label">Avg P/L</div>
+                </div>
+            </div>
+            
+            <!-- Journal Tabs -->
+            <div class="journal-tabs">
+                <button class="journal-tab active" onclick="showJournalTab('all')">All</button>
+                <button class="journal-tab" onclick="showJournalTab('opens')">Entries</button>
+                <button class="journal-tab" onclick="showJournalTab('closes')">Exits</button>
+                <button class="journal-tab" onclick="showJournalTab('history')">Trade History</button>
+            </div>
+            
+            <!-- Journal Entries -->
+            <div id="journal-entries"></div>
+            
+            <!-- Export Button -->
+            <button class="btn btn-journal" onclick="exportJournal()" style="margin-top: 15px;">📥 Export Journal</button>
+        </div>
+        
+        <!-- Activity Log -->
         <div class="card" style="margin-top: 20px;">
             <h2>📝 Activity Log</h2>
             <div id="log"></div>
@@ -521,6 +756,7 @@ class TradingDashboard:
     
     <script>
         let ws = null;
+        let currentJournalTab = 'all';
         
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -550,6 +786,10 @@ class TradingDashboard:
                 badge.textContent = 'STOPPED';
                 badge.className = 'status-badge status-stopped';
             }
+            
+            // Update P/L color
+            const pnlElement = document.getElementById('total-pnl');
+            pnlElement.className = `stat-value ${(data.total_pnl || 0) >= 0 ? 'positive' : 'negative'}`;
         }
         
         async function fetchStatus() {
@@ -610,6 +850,217 @@ class TradingDashboard:
             }
         }
         
+        async function fetchJournalStats() {
+            try {
+                const response = await fetch('/api/journal/stats');
+                const data = await response.json();
+                
+                document.getElementById('journal-total-trades').textContent = data.total_trades || 0;
+                document.getElementById('journal-win-rate').textContent = `${((data.win_rate || 0) * 100).toFixed(1)}%`;
+                document.getElementById('journal-total-pnl').textContent = `$${(data.total_pnl || 0).toFixed(2)}`;
+                document.getElementById('journal-avg-pnl').textContent = `$${(data.avg_pnl || 0).toFixed(2)}`;
+            } catch (e) {
+                console.error('Error fetching journal stats:', e);
+            }
+        }
+        
+        async function fetchJournalEntries(tab) {
+            try {
+                let url = '/api/journal';
+                if (tab === 'opens') url += '?action=open';
+                else if (tab === 'closes') url += '?action=close';
+                else if (tab === 'history') url = '/api/journal/history';
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                const container = document.getElementById('journal-entries');
+                
+                if (tab === 'history') {
+                    // Trade history view
+                    if (data.trades.length === 0) {
+                        container.innerHTML = '<p style="text-align: center; color: #888;">No trade history yet</p>';
+                    } else {
+                        container.innerHTML = data.trades.map(trade => {
+                            const open = trade.open;
+                            const close = trade.close;
+                            const pnlClass = close && close.pnl >= 0 ? 'profit' : 'loss';
+                            
+                            return `
+                                <div class="journal-entry ${pnlClass}">
+                                    <div class="journal-header">
+                                        <span class="journal-pair">${open?.pair || 'Unknown'}</span>
+                                        <span class="journal-time">${new Date(open?.timestamp).toLocaleString()}</span>
+                                    </div>
+                                    <div class="journal-details">
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Side</div>
+                                            <div class="journal-detail-value">${open?.side?.toUpperCase() || '-'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Amount</div>
+                                            <div class="journal-detail-value">${open?.amount?.toFixed(4) || '-'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Entry Price</div>
+                                            <div class="journal-detail-value">$${open?.price?.toFixed(2) || '-'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Exit Price</div>
+                                            <div class="journal-detail-value">$${close?.price?.toFixed(2) || 'Open'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">P/L</div>
+                                            <div class="journal-detail-value ${(close?.pnl || 0) >= 0 ? 'positive' : 'negative'}">
+                                                $${close?.pnl?.toFixed(2) || '0.00'}
+                                            </div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Strategy</div>
+                                            <div class="journal-detail-value">${open?.strategy || '-'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Signal</div>
+                                            <div class="journal-detail-value">${open?.signal_type || '-'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Confidence</div>
+                                            <div class="journal-detail-value">
+                                                <span class="confidence-badge ${(open?.confidence || 0) > 0.7 ? 'confidence-high' : (open?.confidence || 0) > 0.5 ? 'confidence-medium' : 'confidence-low'}">
+                                                    ${((open?.confidence || 0) * 100).toFixed(0)}%
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">R:R Ratio</div>
+                                            <div class="journal-detail-value">${open?.risk_reward_ratio?.toFixed(2) || '-'}</div>
+                                        </div>
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">Duration</div>
+                                            <div class="journal-detail-value">${close?.duration_seconds ? formatDuration(close.duration_seconds) : 'Open'}</div>
+                                        </div>
+                                    </div>
+                                    ${open?.entry_reason ? `
+                                        <div class="journal-reason">
+                                            <div class="journal-reason-label">📝 Entry Reason</div>
+                                            ${open.entry_reason}
+                                        </div>
+                                    ` : ''}
+                                    ${close?.exit_reason ? `
+                                        <div class="journal-reason">
+                                            <div class="journal-reason-label">📝 Exit Reason</div>
+                                            ${close.exit_reason}
+                                        </div>
+                                    ` : ''}
+                                    ${close?.notes ? `
+                                        <div class="journal-reason">
+                                            <div class="journal-reason-label">💭 Notes</div>
+                                            ${close.notes}
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            `;
+                        }).join('');
+                    }
+                } else {
+                    // Single entries view
+                    if (data.entries.length === 0) {
+                        container.innerHTML = '<p style="text-align: center; color: #888;">No journal entries yet</p>';
+                    } else {
+                        container.innerHTML = data.entries.map(entry => `
+                            <div class="journal-entry ${entry.side}">
+                                <div class="journal-header">
+                                    <span class="journal-pair">${entry.pair} - ${entry.action.toUpperCase()}</span>
+                                    <span class="journal-time">${new Date(entry.timestamp).toLocaleString()}</span>
+                                </div>
+                                <div class="journal-details">
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Side</div>
+                                        <div class="journal-detail-value">${entry.side.toUpperCase()}</div>
+                                    </div>
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Amount</div>
+                                        <div class="journal-detail-value">${entry.amount.toFixed(4)}</div>
+                                    </div>
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Price</div>
+                                        <div class="journal-detail-value">$${entry.price.toFixed(2)}</div>
+                                    </div>
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Total Value</div>
+                                        <div class="journal-detail-value">$${entry.total_value.toFixed(2)}</div>
+                                    </div>
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Strategy</div>
+                                        <div class="journal-detail-value">${entry.strategy || '-'}</div>
+                                    </div>
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Signal</div>
+                                        <div class="journal-detail-value">${entry.signal_type || '-'}</div>
+                                    </div>
+                                    <div class="journal-detail">
+                                        <div class="journal-detail-label">Confidence</div>
+                                        <div class="journal-detail-value">
+                                            <span class="confidence-badge ${entry.confidence > 0.7 ? 'confidence-high' : entry.confidence > 0.5 ? 'confidence-medium' : 'confidence-low'}">
+                                                ${(entry.confidence * 100).toFixed(0)}%
+                                            </span>
+                                        </div>
+                                    </div>
+                                    ${entry.pnl !== null ? `
+                                        <div class="journal-detail">
+                                            <div class="journal-detail-label">P/L</div>
+                                            <div class="journal-detail-value ${entry.pnl >= 0 ? 'positive' : 'negative'}">$${entry.pnl.toFixed(2)}</div>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                ${entry.entry_reason ? `
+                                    <div class="journal-reason">
+                                        <div class="journal-reason-label">📝 Entry Reason</div>
+                                        ${entry.entry_reason}
+                                    </div>
+                                ` : ''}
+                                ${entry.exit_reason ? `
+                                    <div class="journal-reason">
+                                        <div class="journal-reason-label">📝 Exit Reason</div>
+                                        ${entry.exit_reason}
+                                    </div>
+                                ` : ''}
+                                ${entry.notes ? `
+                                    <div class="journal-reason">
+                                        <div class="journal-reason-label">💭 Notes</div>
+                                        ${entry.notes}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `).join('');
+                    }
+                }
+            } catch (e) {
+                console.error('Error fetching journal:', e);
+            }
+        }
+        
+        function formatDuration(seconds) {
+            if (seconds < 60) return `${seconds}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+            return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+        }
+        
+        function showJournalTab(tab) {
+            currentJournalTab = tab;
+            
+            // Update tab buttons
+            document.querySelectorAll('.journal-tab').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.textContent.toLowerCase().includes(tab.substring(0, 4))) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            // Fetch entries
+            fetchJournalEntries(tab);
+        }
+        
         async function startTrading() {
             await fetch('/api/trading/start', { method: 'POST' });
             addLog('Trading started', 'success');
@@ -626,6 +1077,12 @@ class TradingDashboard:
             fetchStrategy();
         }
         
+        async function exportJournal() {
+            const response = await fetch('/api/journal/export');
+            const data = await response.json();
+            addLog(data.message, 'success');
+        }
+        
         function addLog(message, type = 'info') {
             const log = document.getElementById('log');
             const time = new Date().toLocaleTimeString();
@@ -638,11 +1095,15 @@ class TradingDashboard:
         fetchStatus();
         fetchPositions();
         fetchStrategy();
+        fetchJournalStats();
+        fetchJournalEntries('all');
         
         // Refresh periodically
         setInterval(fetchStatus, 5000);
         setInterval(fetchPositions, 5000);
         setInterval(fetchStrategy, 10000);
+        setInterval(fetchJournalStats, 10000);
+        setInterval(() => fetchJournalEntries(currentJournalTab), 10000);
         
         addLog('Dashboard initialized', 'success');
     </script>
