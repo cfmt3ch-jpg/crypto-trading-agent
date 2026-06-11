@@ -1,0 +1,86 @@
+# Git ignore file for Crypto Trading Agent
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Configuration (keep example)
+config/config.yaml
+!config/config.example.yaml
+
+# Data
+data/historical/*
+data/cache/*
+!data/historical/.gitkeep
+!data/cache/.gitkeep
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Models
+models/*
+!models/.gitkeep
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docker
+docker-compose.override.yml
+
+# Secrets
+*.pem
+*.key
+*.crt
